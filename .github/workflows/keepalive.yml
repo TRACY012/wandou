@@ -1,0 +1,13 @@
+name: Keepalive Workflow
+on:
+  schedule:
+    - cron: '0 0 1 * *' # 每月1号运行一次
+  workflow_dispatch:   # 允许手动运行
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: gautamkrishnar/keepalive-workflow@v1 # 这个插件会自动帮你产生一个微小提交
