@@ -2,8 +2,8 @@ name: Keepalive Workflow
 
 on:
   schedule:
-    - cron: '0 0 1 * *'   # 每月1号自动运行一次
-  workflow_dispatch:       # 允许你在网页上随时手动点击运行
+    - cron: '0 0 1 * *'   # 每月1号自动运行
+  workflow_dispatch:       # 允许手动触发
 
 permissions:
   contents: write
@@ -12,5 +12,12 @@ jobs:
   cronjob-keepalive:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: gautamkrishnar/keepalive-workflow@v2
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Keepalive Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "Chore: Keepalive workflow"
+          git push
