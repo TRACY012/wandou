@@ -1,13 +1,16 @@
 name: Keepalive Workflow
+
 on:
   schedule:
-    - cron: '0 0 1 * *' # 每月1号运行一次
-  workflow_dispatch:   # 允许手动运行
+    - cron: '0 0 1 * *'   # 每月1号自动运行一次
+  workflow_dispatch:       # 允许你在网页上随时手动点击运行
+
+permissions:
+  contents: write
 
 jobs:
-  keepalive:
+  cronjob-keepalive:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - uses: gautamkrishnar/keepalive-workflow@v1 # 这个插件会自动帮你产生一个微小提交
+      - uses: actions/checkout@v4
+      - uses: gautamkrishnar/keepalive-workflow@v2
