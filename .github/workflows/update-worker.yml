@@ -5,8 +5,13 @@ on:
     branches:
       - main
   schedule:
-    - cron: "0 1 * * *" # 每天凌晨1点自动运行
-  workflow_dispatch:     # 支持手动运行
+    - cron: "0 1 * * *" # 每天凌晨1点自动检查更新
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: '是否强制更新（忽略版本检查）'
+        required: false
+        default: 'false'
 
 permissions:
   contents: write
@@ -15,71 +20,60 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - name: 初始化仓库
+      - name: 检出仓库
         uses: actions/checkout@v4
 
-      - name: 获取当前本地版本
-        id: get_local_version
+      - name: 检查并更新 Worker
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo -e "\033[34m[获取本地版本]\033[0m"
-          if [ -f version.txt ]; then
-            LOCAL_VERSION=$(cat version.txt)
-            echo "当前本地版本: $LOCAL_VERSION"
-          else
-            echo "首次同步，没有本地版本。"
-            LOCAL_VERSION=""
-          fi
-          echo "LOCAL_VERSION=$LOCAL_VERSION" >> $GITHUB_ENV
-
-      - name: 获取最新 Release 信息
-        id: get_release
-        run: |
-          echo -e "\033[34m[获取最新 Release]\033[0m"
-          API_URL="https://api.github.com/repos/bia-pain-bache/BPB-Worker-Panel/releases"
-          RESPONSE=$(curl -s "$API_URL")
-          LATEST_RELEASE=$(echo "$RESPONSE" | jq -r '.[0]')
-          TAG_NAME=$(echo "$LATEST_RELEASE" | jq -r '.tag_name')
-          DOWNLOAD_URL=$(echo "$LATEST_RELEASE" | jq -r '.assets[] | select(.name == "worker.zip") | .browser_download_url')
-
-          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
-            echo -e "\033[31m未找到 worker.zip，退出！\033[0m"
+          log() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1"; }
+          log "开始检查更新..."
+          LOCAL_VERSION=$(cat version.txt 2>/dev/null || echo "")
+          log "本地版本: ${LOCAL_VERSION:-无}"
+          
+          log "获取最新 Release 信息..."
+          RESPONSE=$(curl -s --retry 3 -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/bia-pain-bache/BPB-Worker-Panel/releases")
+          if [ $? -ne 0 ]; then
+            log "ERROR: 无法访问 GitHub API"
             exit 1
           fi
 
-          echo "最新版本号: $TAG_NAME"
-          echo "DOWNLOAD_URL=$DOWNLOAD_URL" >> $GITHUB_ENV
-          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+          TAG_NAME=$(echo "$RESPONSE" | jq -r '.[0].tag_name')
+          
+          # 兼容匹配 worker.zip 或 unobfuscated-worker.zip
+          DOWNLOAD_URL=$(echo "$RESPONSE" | jq -r '.[0].assets[] | select(.name == "worker.zip" or .name == "unobfuscated-worker.zip" or .name == "worker.js") | .browser_download_url' | head -n 1)
 
-      - name: 判断是否需要更新
-        id: check_update
-        run: |
-          echo -e "\033[34m[判断是否需要更新]\033[0m"
-          if [ "$LOCAL_VERSION" = "$TAG_NAME" ]; then
-            echo -e "\033[32m已经是最新版本，无需更新。\033[0m"
-            echo "UPDATE_NEEDED=false" >> $GITHUB_ENV
-          else
-            echo -e "\033[33m发现新版本，需要更新！\033[0m"
-            echo "UPDATE_NEEDED=true" >> $GITHUB_ENV
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
+            log "尝试从备用链接获取最新压缩包..."
+            DOWNLOAD_URL="https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/download/$TAG_NAME/unobfuscated-worker.zip"
           fi
 
-      - name: 如果需要，清理旧文件并下载新版本
-        if: env.UPDATE_NEEDED == 'true'
-        run: |
-          echo -e "\033[34m[清理旧文件]\033[0m"
-          rm -rf ./*
-          echo -e "\033[34m[下载最新 worker.zip]\033[0m"
-          wget -O worker.zip "$DOWNLOAD_URL"
-          echo -e "\033[34m[解压 worker.zip]\033[0m"
-          unzip worker.zip
-          echo -e "\033[34m[删除 worker.zip]\033[0m"
-          rm worker.zip
-          echo -e "\033[34m[记录新版本号]\033[0m"
+          log "最新版本: $TAG_NAME"
+          log "下载地址: $DOWNLOAD_URL"
+
+          FORCE_UPDATE=${{ github.event.inputs.force_update || 'false' }}
+          if [ "$LOCAL_VERSION" = "$TAG_NAME" ] && [ "$FORCE_UPDATE" != "true" ]; then
+            log "已是最新版本，无需更新。"
+            exit 0
+          fi
+
+          log "开始下载更新包..."
+          curl -L -o downloaded_file.zip "$DOWNLOAD_URL" || curl -L -o downloaded_file.zip "https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/download/$TAG_NAME/worker.zip"
+
+          log "解压并更新本地文件..."
+          unzip -o downloaded_file.zip || true
+          rm -f downloaded_file.zip
+
           echo "$TAG_NAME" > version.txt
 
-      - name: 提交更改
-        if: env.UPDATE_NEEDED == 'true'
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "🔄 自动同步最新 Worker 版本：${{ env.TAG_NAME }}"
-          commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
-          push_options: --force
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          if git diff --staged --quiet; then
+            log "文件无变化，跳过提交。"
+          else
+            git commit -m "Auto Update Worker to $TAG_NAME"
+            git push
+            log "更新成功，已提交更改！"
+          fi
